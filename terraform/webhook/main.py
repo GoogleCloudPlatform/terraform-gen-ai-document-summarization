@@ -13,8 +13,12 @@
 # limitations under the License.
 
 import datetime
+import re
 import os
-from google.cloud import logging
+from typing import Union
+import pandas as pd
+
+from google.auth import default
 import vertexai
 from vertexai.preview.language_models import TextGenerationModel
 
@@ -27,10 +31,27 @@ from storage import upload_to_gcs
 from vertex_llm import predict_large_language_model
 from utils import coerce_datetime_zulu, truncate_complete_text
 
-_PROJECT_ID = os.environ['PROJECT_ID']
-_OUTPUT_BUCKET = os.environ['OUTPUT_BUCKET']
-_LOCATION = os.environ['LOCATION']
-_MODEL_NAME = 'text-bison@001'
+_MOCK_DATA = [{'input_text': 'What has research in financial economics since at least the 1990s focused on?',
+  'output_text': 'market anomalies'},
+ {'input_text': 'What is the direct implication of the efficient-market hypothesis?',
+  'output_text': 'it is impossible to "beat the market" consistently on a risk-adjusted basis'},
+ {'input_text': 'What is the EMH formulated in terms of?',
+  'output_text': 'risk adjustment'},
+ {'input_text': 'What is the result of research in financial economics since at least the 1990s?',
+  'output_text': 'market anomalies'},
+ {'input_text': 'Who is the idea that financial market returns are difficult to predict associated with?',
+  'output_text': 'Eugene Fama'},
+ {'input_text': 'What does the EMH provide the basic logic for?',
+  'output_text': 'modern risk-based theories of asset prices'},
+ {'input_text': 'What are some examples of return predictors?',
+  'output_text': 'Rosenberg, Reid, and Lanstein 1985; Campbell and Shiller 1988; Jegadeesh and Titman 1993'},
+ {'input_text': 'What has been found since the 2010s?',
+  'output_text': 'return predictability has become more elusive'},
+ {'input_text': 'Who is Eugene Fama?',
+  'output_text': 'an influential 1970 review of the theoretical and empirical research'},
+ {'input_text': 'Who is closely associated with the efficient-market hypothesis?',
+  'output_text': 'Eugene Fama'}]
+
 _DEFAULT_PARAMETERS = {
     "temperature": .2,
     "max_output_tokens": 256,
@@ -47,129 +68,169 @@ def default_marshaller(o: object) -> str:
     return str(o)
 
 
+def generate_questions(text: str, parameters: None | dict[str, int | float] = None) -> str:
+    """Generate sample questions with a Large Language Model"""
+    vertexai.init(
+        project=_PROJECT_ID,
+        location=_LOCATION,
+        credentials=_CREDENTIALS
+    )
+
+    final_parameters = _DEFAULT_PARAMETERS.copy()
+    if parameters:
+      final_parameters.update(parameters)
+
+    model = TextGenerationModel.from_pretrained("text-bison@001")
+    response = model.predict(
+      f'Extract at least 10 Questions based on the following article:'
+    , **final_parameters)
+    print(f"Questions generated from Model: {response.text}")
+
+    return response.text
+
+
+def question_answering(text: str, parameters: None | dict[str, int | float] = None) -> str:
+    """Answer the extracted questions with a Large Language Model"""
+    vertexai.init(
+        project=_PROJECT_ID,
+        location=_LOCATION,
+        credentials=_CREDENTIALS
+    )
+
+    final_parameters = _DEFAULT_PARAMETERS.copy()
+    if parameters:
+      final_parameters.update(parameters)
+
+    model = TextGenerationModel.from_pretrained("text-bison@001")
+    response = model.predict(
+      f'{text}\n'
+      'Answer the following questions one by one:\n'
+      'What is the direct implication of the efficient-market hypothesis?\n'
+      'What is the EMH formulated in terms of?\n'
+      'What is the result of research in financial economics since at least the 1990s?\n'
+      'Who is the idea that financial market returns are difficult to predict associated with?\n'
+      'What does the EMH provide the basic logic for?\n'
+      'What are some examples of return predictors?\n'
+      'What has been found since the 2010s?\n'
+      'Who is Eugene Fama?\n'
+      'Who is closely associated with the efficient-market hypothesis?\n'
+      'What has research in financial economics since at least the 1990s focused on?\n'
+      'Answer1:\n'
+      'Answer2:\n'
+      'Answer3:\n'
+      'Answer4:\n'
+      'Answer5:\n'
+      'Answer6:\n'
+      'Answer7:\n'
+      'Answer8:\n'
+      'Answer9:\n'
+      'Answer10:\n'
+    , **final_parameters)
+    print(f"Answers of extractive questions from Model: {response.text}")
+
+credentials, _ = default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+def tuning(
+    project_id: str,
+    location: str,
+    training_data: pd.DataFrame | str,
+    train_steps: int = 10,
+) -> None:
+    """Tune a new model, based on a prompt-response data.
+
+    "training_data" can be either the GCS URI of a file formatted in JSONL format
+    (for example: training_data=f'gs://{bucket}/{filename}.jsonl'), or a pandas
+    DataFrame. Each training example should be JSONL record with two keys, for
+    example:
+      {
+        "input_text": <input prompt>,
+        "output_text": <associated output>
+      },
+    or the pandas DataFame should contain two columns:
+      ['input_text', 'output_text']
+    with rows for each training example.
+
+    Args:
+      project_id: GCP Project ID, used to initialize vertexai
+      location: GCP Region, used to initialize vertexai
+      training_data: GCS URI of jsonl file or pandas dataframe of training data
+      train_steps: Number of training steps to use when tuning the model.
+    """
+    vertexai.init(
+        project=project_id,
+        location=location,
+        credentials=credentials
+    )
+    model = TextGenerationModel.from_pretrained("google/text-bison@001")
+
+    model.tune_model(
+        training_data=training_data,
+        # Optional:
+        train_steps=train_steps,
+        tuning_job_location="europe-west4",  # Only supported in europe-west4 for Public Preview
+        tuned_model_location=location,
+    )
+
+    print(model._job.status)
+    return model
+
 def summarize_text(text: str, parameters: None | dict[str, int | float] = None) -> str:
     """Summarization Example with a Large Language Model"""
     vertexai.init(
         project=_PROJECT_ID,
         location=_LOCATION,
+        credentials=_CREDENTIALS
     )
 
     final_parameters = _DEFAULT_PARAMETERS.copy()
     if parameters:
-        final_parameters.update(parameters)
+      final_parameters.update(parameters)
 
     model = TextGenerationModel.from_pretrained("text-bison@001")
     response = model.predict(
-        f'Provide a summary with about two sentences for the following article: {text}\n'
-        'Summary:',
-        **final_parameters,
-    )
+      f'Provide a summary with about two sentences for the following article: {text}\n'
+      'Summary:'
+    , **final_parameters)
     print(f"Response from Model: {response.text}")
 
     return response.text
 
+# WEBHOOK FUNCTION
+# @functions_framework.cloud_request
+def entrypoint(request):
+    """Entrypoint for Cloud Function"""
 
-def entrypoint(request: object) -> dict[str, str]:
+    print(request.get_json())
+    return "HelloWorld!!!!"
 
-    data = request.get_json()
-    if data.get('kind', None) == 'storage#object':
-        return cloud_event_entrypoint(
-            name = data['name'],
-            event_id = data["id"],
-            bucket = data["bucket"],
-            time_created = coerce_datetime_zulu(data["timeCreated"]),
-        )
-    else:
-        return summarization_entrypoint(
-            name=data['name'],
-            extracted_text=data['text'],
-            time_created=datetime.datetime.now(datetime.timezone.utc),
-            event_id='CURL_TRIGGER'
-        )
+# @functions_framework.cloud_event
+# def entrypoint(request):
 
+#   metadata = dict(
+#     event_id = request["id"],
+#     event_type = request["type"],
+#     bucket = request.data["bucket"],
+#     name = request.data["name"],
+#     metageneration = request.data["metageneration"],
+#     timeCreated = coerce_datetime_zulu(request.data["timeCreated"]),
+#     updated = coerce_datetime_zulu(request.data["updated"]),
+#   )
 
-def cloud_event_entrypoint(event_id, bucket, name, time_created):
-    
-    orig_pdf_uri = f"gs://{bucket}/{name}"
-    logging_client = logging.Client()
-    logger = logging_client.logger(_FUNCTIONS_GCS_EVENT_LOGGER)
-    logger.log(f"cloud_event_id({event_id}): UPLOAD {orig_pdf_uri}",
-               severity="INFO")
-    
-    extracted_text = async_document_extract(bucket, name, output_bucket=_OUTPUT_BUCKET)
-    logger.log(f"cloud_event_id({event_id}): OCR  gs://{bucket}/{name}",
-               severity="INFO")
-    
-    return summarization_entrypoint(
-        name,
-        extracted_text,
-        time_created=time_created,
-        event_id=event_id,
-        bucket=bucket,
-    )
+#   try:
+#     response = {
+#       'revision': os.environ['REVISION'],
+#       'questions': generate_questions(_MOCK_TEXT),
+#       'answers': question_answering(_MOCK_TEXT),
+#       'tuning': tune_model(_MOCK_DATA),
+#       'summary': summarize_text(_MOCK_TEXT),
+#     }
+#   except Exception as e:
+#     response = {
+#       'exception': str(e),
+#     }
+#   response['metadata'] = metadata
 
 
-def summarization_entrypoint(
-        name,
-        extracted_text,
-        time_created,
-        bucket=None,
-        event_id=None,
-    ):
-    logging_client = logging.Client()
-    logger = logging_client.logger(_FUNCTIONS_VERTEX_EVENT_LOGGER)
+  
+#   print(json.dumps({'response': response}, indent=2, sort_keys=True, default=default_marshaller))
 
-    complete_text_filename = f'summaries/{name.replace(".pdf", "")}_fulltext.txt'
-    upload_to_gcs(
-        _OUTPUT_BUCKET,
-        complete_text_filename,
-        extracted_text,
-    )
-    logger.log(f"cloud_event_id({event_id}): FULLTEXT_UPLOAD {complete_text_filename}",
-               severity="INFO")
-    
-
-    extracted_text_trunc = truncate_complete_text(extracted_text)
-    summary = predict_large_language_model(
-        project_id=_PROJECT_ID,
-        model_name=_MODEL_NAME,
-        temperature=0.2,
-        max_decode_steps=1024,
-        top_p=0.8,
-        top_k=40,
-        content=f'Summarize:\n{extracted_text_trunc}',
-        location="us-central1",
-    )
-    logger.log(f"cloud_event_id({event_id}): SUMMARY_COMPLETE",
-            severity="INFO")
-
-
-    output_filename = f'system-test/{name.replace(".pdf", "")}_summary.txt'
-    upload_to_gcs(
-        _OUTPUT_BUCKET,
-        output_filename,
-        summary,
-    )
-    logger.log(f"cloud_event_id({event_id}): SUMMARY_UPLOAD {upload_to_gcs}",
-               severity="INFO")
-
-    # If we have any errors, they'll be caught by the bigquery module
-    errors = write_summarization_to_table(
-        project_id=_PROJECT_ID,
-        dataset_id=_DATASET_ID,
-        table_id=_TABLE_ID,
-        bucket=bucket,
-        filename=output_filename,
-        complete_text=extracted_text,
-        complete_text_uri=complete_text_filename,
-        summary=summary,
-        summary_uri=output_filename,
-        timestamp=time_created,
-    )
-
-    logger.log(f"cloud_event_id({event_id}): DB_WRITE",
-               severity="INFO")
-
-    if errors:
-        return errors
-    return {'summary': summary}
+#   return response

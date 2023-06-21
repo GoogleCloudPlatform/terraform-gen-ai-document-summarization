@@ -313,7 +313,6 @@ resource "google_project_iam_member" "run_invoker" {
     google_project_service.iam
   ]
 }
-
 resource "google_project_iam_member" "pubsub_publisher" {
   project = var.project_id
   role    = "roles/pubsub.publisher"
